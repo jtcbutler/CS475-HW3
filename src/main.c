@@ -1,6 +1,6 @@
 #include "ls2.h"
-#include <stdlib.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 int main(int argc, char* argv[]) 
 {
@@ -11,6 +11,5 @@ int main(int argc, char* argv[])
 		fprintf(stderr, "%s <path> [exact_pattern_match]\n", argv[0]);
 		return EXIT_FAILURE;
 	}
-
 	return EXIT_SUCCESS;
 }

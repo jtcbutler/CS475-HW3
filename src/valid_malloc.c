@@ -1,9 +1,12 @@
-#include "v_malloc.h"
+#include "valid_malloc.h"
 #include <stdio.h>
 
-void* vMalloc(size_t size, size_t line, const char *file_name, const char *func_name)
+void* validMalloc(size_t size, size_t line, const char *file_name, const char *func_name)
 {
+	// attempt allocate requested memory
 	void *ptr = malloc(size);
+
+	// if the allocation failed, print a verbose error message and exit
 	if(!ptr)
 	{
 		fprintf(stderr, "MEMORY ALLOCATION FAILURE:\n");
@@ -12,5 +15,7 @@ void* vMalloc(size_t size, size_t line, const char *file_name, const char *func_
 		fprintf(stderr, "\texiting...\n");
 		exit(EXIT_FAILURE);
 	}
+
+	// return the allocated memory
 	return ptr;
 }

@@ -1,6 +1,5 @@
 #include "ls2.h"
-#include "v_malloc.h"
-#include "file_path.h"
+#include "dynamic_string.h"
 #include "file_stack.h"
 
 #include <stdio.h>
@@ -9,112 +8,124 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/resource.h>
 
 void ls2(const char *path, const char *exact_pattern_match) 
 {
-	// create and populate a stat structure, <statbuf>
-	// if <statbuf> indicates that the file located at <path> is not a directory
+	// create and populate a stat structure with information about <path>
+	// if unable to query information about <path>
 	// print an error message and exit
 	struct stat statbuf;
-	stat(path, &statbuf);
+	if(lstat(path, &statbuf) != 0)
+	{
+		fprintf(stderr, "ERROR:\n");
+		fprintf(stderr, "\tfailed to query information about \"%s\"\n", path);
+		fprintf(stderr, "\texiting...\n");
+		exit(EXIT_FAILURE);
+	}
+
+	// if <statbuf> indicates that the file located at <path> is not a directory
+	// print an error message and exit
 	if(!S_ISDIR(statbuf.st_mode))
 	{
-		fprintf(stderr, "\"%s\" is not a directory\n", path);
+		fprintf(stderr, "ERROR:\n");
+		fprintf(stderr, "\t\"%s\" is not a directory\n", path);
+		fprintf(stderr, "\texiting...\n");
 		exit(EXIT_FAILURE);
 	}
 
 	// create and initialize a <FileStack> 
-	// used to hold the file information during recursive traversal
+	// used to hold past file information
 	FileStack file_stack;
-	FS_init(&file_stack);
+	FileStack_init(&file_stack);
 
-	// create and initialize a <FilePath> 
-	// used for holding the path of the current file during recursive traversal
-	FilePath file_path;
-	FP_init(&file_path, path);
+	// create and initialize a <DynamicString> 
+	// used to holding the path of the current file
+	DynamicString file_path;
+	DynamicString_init(&file_path, path);
 
-	// recursively traverse this directory and all of its subdirectories
-	r_ls2(&file_stack, &file_path, exact_pattern_match);
+	// if the provided path ended with '/' and the path was not one character long (i.e. refering to the root directory)
+	// truncate the forward slash
+	if(file_path.length != 1 && file_path.content[file_path.length] == '/') DynamicString_truncate(&file_path, 1);
+
+	// traverse this directory and all of its subdirectories collecting file information
+	r_ls2(&file_stack, &file_path, exact_pattern_match, 0);
 
 	// print the file information stored in <file_stack>
-	FS_print(&file_stack);
+	FileStack_print(&file_stack);
 
 	// free all dynamic memory being used by <file_stack> and <file_path>
-	FS_free(&file_stack);
-	FP_free(&file_path);
+	FileStack_free(&file_stack);
+	DynamicString_free(&file_path);
 }
 
-void r_ls2(FileStack *stack, FilePath *path, const char *exact_pattern_match)
+void r_ls2(FileStack *stack, DynamicString *path, const char *exact_pattern_match, size_t depth)
 {
-	// open the directory indicated by <path>
-	DIR *directory = opendir(path->name);
+	// attempt to open the directory indicated by <path>
+	// if unable to open said directory, return
+	DIR *directory = opendir(path->content);
+	if(directory == NULL) return;
 
 	while(1)
 	{
-		// read the next entry from <directory>
-		// if that entry is <NULL> then exit the loop (there are no more entries to read)
+		// read the next entry from the open directory
+		// if the entry is <NULL>, all files have been read, cleanup and exit
 		struct dirent *entry = readdir(directory);
-		if(entry == NULL) break;
+		if(entry == NULL)
+		{
+			closedir(directory);
+			return;
+		}
 
-		// ensure that the current entry is not "." or ".."
-		// if it is, skip it
+		// if the name of the current entry is "." or "..", skip it
 		if(strcmp(entry->d_name, ".")  == 0) continue;
 		if(strcmp(entry->d_name, "..") == 0) continue;
 
-		// save the current depth and length of <path>
-		// these will be used when/if this entry is pushed to <stack>
-		int depth = path->depth;
-		int length = path->size;
+		// take note of <path>'s current length
+		int appended_length = path->length;
 
-		// append the current entries name to <path>
-		FP_descend(path, entry->d_name);
+		// add the current entries name to the end of path
+		DynamicString_append(path, "/");
+		DynamicString_append(path, entry->d_name);
 
-		// create and populate a stat structure, <statbuf> with info about the current entry
+		// calculate the difference between <path>'s old and new length
+		// this is the length of the entries name
+		appended_length = path->length - appended_length;
+
+
+		// create and populate a stat structure with information about <path>
+		// if unable to query information about the current entry, skip it
 		struct stat statbuf;
-		stat(path->name, &statbuf);
+		if(lstat(path->content, &statbuf) != 0) continue;
 
 		// if the current entry is a directory
 		if(S_ISDIR(statbuf.st_mode))
 		{
-			// save the current size of the stack
+			// take note of <stack>'s current size
 			size_t pre_recursion_size = stack->size;
 
-			// recurse
-			r_ls2(stack, path, exact_pattern_match);
+			// recurse on the current entry
+			r_ls2(stack, path, exact_pattern_match, depth+1);
 
-			// if the size of the stack has changed
-			// the current entry was not empty and should be included
+			// if the size of the stack has changed, push the current entry onto <stack>
 			if(stack->size != pre_recursion_size)
 			{
-				// dynamically allocate a copy of the current entries name
-				char *name = V_MALLOC(sizeof(char) * (path->size - length));
-				strcpy(name, entry->d_name);
-
-				// push the current entry onto <stack>
-				FS_push(stack, DIRECTORY_NODE, name, depth, statbuf.st_size);
+				FileStack_push(stack, DIRECTORY_NODE, entry->d_name, depth, statbuf.st_size);
 			}
 		}
 
 		// if the current entry is a regular file
 		else if(S_ISREG(statbuf.st_mode))
 		{
-			// if <exact_pattern_match> is not defined or the current entries name matches <exact_pattern_match>
-			// push the current entry onto the <stack>
+			// if <exact_pattern_match> is undefined, or the current entries name matches <exact_pattern_match>
+			// push the current entry onto <stack>
 			if(exact_pattern_match == NULL || strcmp(entry->d_name, exact_pattern_match) == 0)
 			{
-				// dynamically allocate a copy of the current entries name
-				char *name = V_MALLOC(sizeof(char) * (path->size - length));
-				strcpy(name, entry->d_name);
-
-				// push the current entry onto <stack>
-				FS_push(stack, REGULAR_NODE, name, depth, statbuf.st_size);
+				FileStack_push(stack, REGULAR_NODE, entry->d_name, depth, statbuf.st_size);
 			}
 		}
 
-		// remove the current entries name from the end of <path>
-		FP_ascend(path);
+		// remove the name of the current entry from the end of <path>
+		DynamicString_truncate(path, appended_length);
 	}
-
-	// close the directory indicated by <path>
-	closedir(directory);
 }
